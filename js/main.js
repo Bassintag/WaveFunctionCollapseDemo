@@ -1,13 +1,13 @@
-const TILE_SIZE = 70;
+const TILE_SIZE = 64;
 
 ImageData.prototype.getAt = function (x, y) {
     const idx = (y * this.width + x) * 4;
     return this.data.slice(idx, idx + 4);
 };
 
-ImageData.prototype.getSub = function (size, tx, ty) {
-    const startX = tx * size;
-    const startY = ty * size;
+ImageData.prototype.getSub = function (size, tx, ty, spacing = 0) {
+    const startX = tx * (size + spacing);
+    const startY = ty * (size + spacing);
     const endY = startY + size;
     const data = [];
     for (let y = startY; y < endY; y += 1) {
@@ -17,14 +17,14 @@ ImageData.prototype.getSub = function (size, tx, ty) {
     return new ImageData(Uint8ClampedArray.from(data), size, size);
 };
 
-ImageData.prototype.slice = function (size, max = -1) {
-    const tx = Math.floor(this.width / size);
-    const ty = Math.floor(this.height / size);
+ImageData.prototype.slice = function (size, spacing = 0, max = -1) {
+    const tx = Math.floor(this.width / (size + spacing));
+    const ty = Math.floor(this.height / (size + spacing));
     const ret = [];
     for (let y = 0; y < ty; y += 1) {
         for (let x = 0; x < tx; x += 1) {
             if (max < 0 || x * ty + y < max) {
-                ret.push(this.getSub(size, x, y));
+                ret.push(this.getSub(size, x, y, spacing));
             }
         }
     }
@@ -97,13 +97,9 @@ function hashColorArray(array) {
     });
 }
 
-async function wfc(tiles, width, height, callback=null) {
+async function wfc(tiles, width, height, callback) {
 
     const wave = [];
-
-    if (callback) {
-        callback(wave);
-    }
 
     async function collapse(idx) {
         const tiles = wave[idx];
@@ -112,6 +108,7 @@ async function wfc(tiles, width, height, callback=null) {
         tiles.splice(1, tiles.length - 1);
         const x = idx % width;
         const y = Math.floor(idx / height);
+        wave[idx].changed = true;
         await propagate(x, y - 1, x, y);
         await propagate(x, y + 1, x, y);
         await propagate(x - 1, y, x, y);
@@ -138,7 +135,9 @@ async function wfc(tiles, width, height, callback=null) {
         if (matches.length === tiles.length)
             return;
         wave[idx] = matches;
-        await new Promise(resolve => setTimeout(resolve, 20));
+        wave[idx].changed = true;
+        callback(wave);
+        await new Promise(resolve => setTimeout(resolve, 1));
         await propagate(x, y - 1, x, y);
         await propagate(x, y + 1, x, y);
         await propagate(x - 1, y, x, y);
@@ -147,6 +146,7 @@ async function wfc(tiles, width, height, callback=null) {
 
     for (let i = 0; i < width * height; i += 1) {
         wave.push(tiles.slice());
+        wave[i].changed = true;
     }
 
     for (let tries = width * height; tries > 0; tries -= 1) {
@@ -161,13 +161,14 @@ async function wfc(tiles, width, height, callback=null) {
                 idxArray.push(i);
             }
         }
-        console.log(minEntropy);
-        if (minEntropy === 0)
+        callback(wave);
+        if (minEntropy === 0) {
             break;
+        }
         const idx = idxArray.random();
         await collapse(idx);
     }
-    console.log(wave);
+    callback(wave);
     return wave;
 }
 
@@ -178,7 +179,7 @@ window.onload = function () {
     const image = new Image();
     image.src = 'img/sheet.png';
 
-    image.onload = function () {
+    image.onload = async function () {
 
         canvas.width = image.width;
         canvas.height = image.height;
@@ -186,30 +187,36 @@ window.onload = function () {
         context.drawImage(image, 0, 0);
 
         const imageData = context.getImageData(0, 0, image.width, image.height);
-        const tiles = imageData.slice(TILE_SIZE, 36);
+        const tiles = imageData.slice(TILE_SIZE, 0, 98);
         tiles.forEach(function (tile) {
             tile.calculateHashs();
         });
 
-        const MAP_W = 16;
-        const MAP_H = 16;
+        const MAP_W = 8;
+        const MAP_H = 8;
 
-        wfc(tiles, MAP_W, MAP_H, function (map) {
-            setInterval(function () {
+        canvas.width = MAP_W * TILE_SIZE;
+        canvas.height = MAP_H * TILE_SIZE;
 
-                canvas.width = MAP_W * TILE_SIZE;
-                canvas.height = MAP_H * TILE_SIZE;
+        let done = false;
 
-                for (let x = 0; x < MAP_W; x += 1) {
-                    for (let y = 0; y < MAP_H; y += 1) {
-                        const locals = map[x + y * MAP_W];
-                        if (locals && locals.length > 0) {
-                            context.putImageData(locals[0], x * TILE_SIZE, y * TILE_SIZE);
-                        }
+        function draw(map, overlay=true) {
+            context.fillStyle = "rgba(255, 255, 255, 0.008)";
+            for (let x = 0; x < MAP_W; x += 1) {
+                for (let y = 0; y < MAP_H; y += 1) {
+                    const locals = map[x + y * MAP_W];
+                    if (locals && locals.length > 0 && (locals.changed || !overlay)) {
+                        context.putImageData(locals.random(), x * TILE_SIZE, y * TILE_SIZE);
+                        locals.changed = false;
+                        if (!overlay) continue;
+                        context.rect(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+                        context.fill();
                     }
                 }
-
-            }, 10);
-        });
+            }
+        }
+        const map = await wfc(tiles, MAP_W, MAP_H, draw);
+        done = true;
+        draw(map, false);
     };
 };
